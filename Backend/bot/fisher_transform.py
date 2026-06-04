@@ -14,15 +14,16 @@ from bot.config import RESOLUTION, DELTA_PRODUCT_ID
 
 
 def _compute_fisher(candles, lookback=9):
+    # TradingView / Delta Exchange formula: uses HL2 = (high+low)/2
     out, v_prev, f_prev = [], 0.0, 0.0
     for i in range(len(candles)):
         window = candles[max(0, i - lookback + 1): i + 1]
-        HH = max(c["high"]  for c in window)
-        LL = min(c["low"]   for c in window)
-        cl = candles[i]["close"]
+        hl2_vals = [(c["high"] + c["low"]) / 2 for c in window]
+        HH = max(hl2_vals)
+        LL = min(hl2_vals)
+        hl2 = (candles[i]["high"] + candles[i]["low"]) / 2
         if HH != LL:
-            x = (cl - LL) / (HH - LL)
-            v = 0.33 * 2.0 * (x - 0.5) + 0.67 * v_prev
+            v = 0.66 * (2 * ((hl2 - LL) / (HH - LL) - 0.5)) + 0.67 * v_prev
         else:
             v = v_prev
         v = max(min(v, 0.999), -0.999)
@@ -30,7 +31,7 @@ def _compute_fisher(candles, lookback=9):
         out.append({
             "fisher":  f,
             "trigger": f_prev,
-            "close":   cl,
+            "close":   candles[i]["close"],
             "time":    candles[i]["time"],
         })
         v_prev, f_prev = v, f
@@ -43,9 +44,10 @@ def _from_delta(lookback):
     """
     import requests, time as _time
     now   = int(_time.time())
-    start = now - 200 * 3600   # always fetch enough history regardless of resolution
+    start = now - 2000 * 3600  # 2000 candles for Fisher warm-up to match Delta chart
     url   = "https://api.india.delta.exchange/v2/history/candles"
     params = {"symbol": "ETHUSD", "resolution": RESOLUTION, "start": start, "end": now}
+    # Fetch 2000 candles for proper Fisher warm-up (matches Delta Exchange chart values)
     r   = requests.get(url, params=params, timeout=10)
     raw = (r.json().get("result") or []) if r.status_code == 200 else []
     if not raw or len(raw) < lookback + 2:
