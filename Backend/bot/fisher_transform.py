@@ -32,23 +32,37 @@ def _compute_fisher(candles, lookback=9):
 
 
 def get_live_fisher_data(lookback_periods=9):
-    """Fetch latest candles from Binance and return current Fisher + Trigger values."""
-    try:
-        exchange = ccxt.binance()
-        bars     = exchange.fetch_ohlcv("ETH/USDT", timeframe=RESOLUTION, limit=200)
-        candles  = [
-            {"time": b[0], "open": b[1], "high": b[2],
-             "low":  b[3], "close": b[4], "volume": b[5]}
-            for b in bars
-        ]
-        series = _compute_fisher(candles, lookback_periods)
-        latest = series[-1]
-        return {
-            "fisher":  latest["fisher"],
-            "trigger": latest["trigger"],
-            "close":   latest["close"],
-            "time":    latest["time"],
-        }
-    except Exception as e:
-        print(f"[v0] Error fetching Fisher data: {e}")
-        return None
+    """Fetch latest candles and return current Fisher + Trigger values.
+    Tries multiple exchanges in order — handles geo-restrictions (e.g. Binance blocks US IPs).
+    """
+    sources = [
+        ("binance",    "ETH/USDT"),   # works locally
+        ("kucoin",     "ETH/USDT"),   # works globally including US
+        ("bybit",      "ETH/USDT"),   # works globally
+        ("okx",        "ETH/USDT"),   # works globally
+    ]
+    for exchange_id, symbol in sources:
+        try:
+            exchange = getattr(ccxt, exchange_id)()
+            bars     = exchange.fetch_ohlcv(symbol, timeframe=RESOLUTION, limit=200)
+            if not bars:
+                continue
+            candles  = [
+                {"time": b[0], "open": b[1], "high": b[2],
+                 "low":  b[3], "close": b[4], "volume": b[5]}
+                for b in bars
+            ]
+            series = _compute_fisher(candles, lookback_periods)
+            latest = series[-1]
+            print(f"[v0] Fisher data from {exchange_id}")
+            return {
+                "fisher":  latest["fisher"],
+                "trigger": latest["trigger"],
+                "close":   latest["close"],
+                "time":    latest["time"],
+            }
+        except Exception as e:
+            print(f"[v0] {exchange_id} failed: {e} — trying next source")
+            continue
+    print(f"[v0] All exchange sources failed")
+    return None
