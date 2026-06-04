@@ -233,13 +233,18 @@ def is_paper_running() -> bool:
 # ── Paper trading endpoints ──────────────────────────────────────────────────
 @app.post("/start-paper")
 def start_paper():
+    print("[PAPER] [POST /start-paper] Received request")
+
     if is_paper_running():
         pid = int(F_PAPER_PID.read_text().strip())
+        print(f"[PAPER] Already running with PID {pid}")
         return {"started": False, "running": True, "pid": pid, "message": "Already running"}
 
     if not PAPER_FILE.exists():
+        print(f"[PAPER] ERROR: paper_trade.py not found at {PAPER_FILE}")
         return {"started": False, "running": False, "error": f"paper_trade.py not found"}
 
+    print(f"[PAPER] Starting paper_trade.py from {PAPER_FILE}")
     out_f = open(F_PAPER_OUT, "ab", buffering=0)
     err_f = open(F_PAPER_ERR, "ab", buffering=0)
     creationflags = 0
@@ -247,20 +252,25 @@ def start_paper():
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
     try:
+        print(f"[PAPER] Launching subprocess: {' '.join(PAPER_CMD)}")
         proc = subprocess.Popen(
             PAPER_CMD, cwd=str(BOT_CWD),
             stdout=out_f, stderr=err_f,
             creationflags=creationflags, shell=False
         )
+        print(f"[PAPER] Subprocess started with PID {proc.pid}")
     except Exception as e:
+        print(f"[PAPER] ERROR during Popen: {e}")
         out_f.close(); err_f.close()
         return {"started": False, "running": False, "error": str(e)}
 
     F_PAPER_PID.write_text(str(proc.pid))
+    print(f"[PAPER] Waiting 1 second for startup...")
     time.sleep(1.0)
 
     if proc.poll() is not None:
-        stderr_tail = tail_text(F_PAPER_ERR, 32_000)
+        stderr_tail = tail_text(F_PAPER_ERR, 2000)
+        print(f"[PAPER] ERROR: Process exited immediately. Stderr: {stderr_tail}")
         try: F_PAPER_PID.unlink(missing_ok=True)
         except: pass
         out_f.close(); err_f.close()
@@ -268,6 +278,7 @@ def start_paper():
                 "error": "Paper trader crashed on startup", "stderr_tail": stderr_tail}
 
     out_f.close(); err_f.close()
+    print(f"[PAPER] Successfully started. Running with PID {proc.pid}")
     return {"started": True, "running": True, "pid": proc.pid,
             "message": "Paper trading started — 10x and 20x virtual accounts running"}
 
