@@ -4,3 +4,4 @@ python-dotenv
 requests
 ccxt
 python-dateutil
+stock-indicators
