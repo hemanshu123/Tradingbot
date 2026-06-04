@@ -1,10 +1,16 @@
 """
 Pure Python Fisher Transform — no .NET / stock_indicators dependency.
 Same algorithm used in all backtests, so live results will match.
+
+Data source priority:
+  1. Delta Exchange India (matches exactly what Delta's chart shows)
+  2. KuCoin  (fallback — works from US servers like Render)
+  3. Bybit   (fallback)
+  4. Binance (fallback — may be blocked on US servers)
 """
 import math
 import ccxt
-from bot.config import RESOLUTION
+from bot.config import RESOLUTION, DELTA_PRODUCT_ID
 
 
 def _compute_fisher(candles, lookback=9):
@@ -23,7 +29,7 @@ def _compute_fisher(candles, lookback=9):
         f = 0.5 * math.log((1 + v) / (1 - v))
         out.append({
             "fisher":  f,
-            "trigger": f_prev,       # trigger = previous bar's fisher value
+            "trigger": f_prev,
             "close":   cl,
             "time":    candles[i]["time"],
         })
@@ -31,30 +37,64 @@ def _compute_fisher(candles, lookback=9):
     return out
 
 
+def _from_delta(lookback):
+    """Fetch candles from Delta Exchange India — matches the chart exactly.
+    Uses India API directly (api.india.delta.exchange) with resolution as-is (e.g. '1h').
+    """
+    import requests, time as _time
+    now   = int(_time.time())
+    start = now - 200 * 3600   # always fetch enough history regardless of resolution
+    url   = "https://api.india.delta.exchange/v2/history/candles"
+    params = {"symbol": "ETHUSD", "resolution": RESOLUTION, "start": start, "end": now}
+    r   = requests.get(url, params=params, timeout=10)
+    raw = (r.json().get("result") or []) if r.status_code == 200 else []
+    if not raw or len(raw) < lookback + 2:
+        return None
+    candles = sorted([
+        {
+            "time":  int(c["time"]) * 1000,   # seconds → milliseconds
+            "open":  float(c["open"]),
+            "high":  float(c["high"]),
+            "low":   float(c["low"]),
+            "close": float(c["close"]),
+        }
+        for c in raw
+    ], key=lambda x: x["time"])
+    return candles
+
+
+def _from_ccxt(exchange_id, symbol, lookback):
+    """Fetch candles from a ccxt exchange (fallback)."""
+    exchange = getattr(ccxt, exchange_id)()
+    bars = exchange.fetch_ohlcv(symbol, timeframe=RESOLUTION, limit=200)
+    if not bars or len(bars) < lookback + 2:
+        return None
+    return [
+        {"time": b[0], "open": b[1], "high": b[2], "low": b[3], "close": b[4]}
+        for b in bars
+    ]
+
+
 def get_live_fisher_data(lookback_periods=9):
-    """Fetch latest candles and return current Fisher + Trigger values.
-    Tries multiple exchanges in order — handles geo-restrictions (e.g. Binance blocks US IPs).
+    """Return latest Fisher + Trigger from Delta Exchange price data.
+    Falls back to other exchanges if Delta API is unavailable.
     """
     sources = [
-        ("binance",    "ETH/USDT"),   # works locally
-        ("kucoin",     "ETH/USDT"),   # works globally including US
-        ("bybit",      "ETH/USDT"),   # works globally
-        ("okx",        "ETH/USDT"),   # works globally
+        ("Delta Exchange", _from_delta,  None),
+        ("KuCoin",         _from_ccxt,   ("kucoin",   "ETH/USDT")),
+        ("Bybit",          _from_ccxt,   ("bybit",    "ETH/USDT")),
+        ("OKX",            _from_ccxt,   ("okx",      "ETH/USDT")),
+        ("Binance",        _from_ccxt,   ("binance",  "ETH/USDT")),
     ]
-    for exchange_id, symbol in sources:
+
+    for name, fn, args in sources:
         try:
-            exchange = getattr(ccxt, exchange_id)()
-            bars     = exchange.fetch_ohlcv(symbol, timeframe=RESOLUTION, limit=200)
-            if not bars:
+            candles = fn(lookback_periods) if args is None else fn(*args, lookback_periods)
+            if not candles:
                 continue
-            candles  = [
-                {"time": b[0], "open": b[1], "high": b[2],
-                 "low":  b[3], "close": b[4], "volume": b[5]}
-                for b in bars
-            ]
             series = _compute_fisher(candles, lookback_periods)
             latest = series[-1]
-            print(f"[v0] Fisher data from {exchange_id}")
+            print(f"[v0] Fisher data source: {name}")
             return {
                 "fisher":  latest["fisher"],
                 "trigger": latest["trigger"],
@@ -62,7 +102,8 @@ def get_live_fisher_data(lookback_periods=9):
                 "time":    latest["time"],
             }
         except Exception as e:
-            print(f"[v0] {exchange_id} failed: {e} — trying next source")
+            print(f"[v0] {name} failed: {e} — trying next source")
             continue
-    print(f"[v0] All exchange sources failed")
+
+    print("[v0] All data sources failed")
     return None
