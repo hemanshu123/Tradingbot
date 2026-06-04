@@ -1,43 +1,27 @@
 """
-Pure Python Fisher Transform — uses Delta Exchange API for exact data match.
+Fisher Transform using stock-indicators library (TradingView exact match).
+Now that .NET 8.0 is installed, we can use the professional Fisher implementation.
 """
-import math
+from datetime import datetime
+from stock_indicators.indicators.common.quote import Quote
+from stock_indicators import indicators
 import requests
 import time
 import ccxt
 from bot.config import RESOLUTION
 
 
-def _compute_fisher(candles, lookback=9):
-    out, v_prev, f_prev = [], 0.0, 0.0
-    for i in range(len(candles)):
-        window = candles[max(0, i - lookback + 1): i + 1]
-        HH = max(c["high"]  for c in window)
-        LL = min(c["low"]   for c in window)
-        cl = candles[i]["close"]
-        if HH != LL:
-            x = (cl - LL) / (HH - LL)
-            v = 0.33 * 2.0 * (x - 0.5) + 0.67 * v_prev
-        else:
-            v = v_prev
-        v = max(min(v, 0.999), -0.999)
-        f = 0.5 * math.log((1 + v) / (1 - v))
-        out.append({
-            "fisher":  f,
-            "trigger": f_prev,
-            "close":   cl,
-            "time":    candles[i]["time"],
-        })
-        v_prev, f_prev = v, f
-    return out
+def _get_fisher_transform(quotes, lookback_periods=9):
+    """Use stock-indicators GetFisherTransform (TradingView exact formula)."""
+    results = indicators.get_fisher_transform(quotes, lookback_periods)
+    return results
 
 
 def _from_delta(lookback):
     """Fetch candles from Delta Exchange India API."""
     try:
         now = int(time.time())
-        # Fetch 300 candles for proper warm-up and history
-        start = now - 300 * 3600
+        start = now - 300 * 3600  # 300 candles for warm-up
         url = "https://api.india.delta.exchange/v2/history/candles"
         params = {"symbol": "ETHUSD", "resolution": RESOLUTION, "start": start, "end": now}
 
@@ -80,7 +64,7 @@ def _from_ccxt(exchange_id, symbol, lookback):
 
 
 def get_live_fisher_data(lookback_periods=9):
-    """Fetch Fisher from Delta Exchange API (exact match with chart), fallback to other exchanges."""
+    """Fetch Fisher using TradingView formula (stock-indicators library)."""
     sources = [
         ("Delta Exchange", _from_delta,  None),
         ("Binance",        _from_ccxt,   ("binance",  "ETH/USDT")),
@@ -94,14 +78,25 @@ def get_live_fisher_data(lookback_periods=9):
             candles = fn(lookback_periods) if args is None else fn(*args, lookback_periods)
             if not candles:
                 continue
-            series = _compute_fisher(candles, lookback_periods)
-            latest = series[-1]
-            print(f"[v0] Fisher from {name}")
+
+            # Convert to Quote objects for stock-indicators
+            quotes = [
+                Quote(date=datetime.utcfromtimestamp(c["time"] / 1000),
+                      open=c["open"], high=c["high"], low=c["low"],
+                      close=c["close"], volume=0)
+                for c in candles
+            ]
+
+            # Calculate Fisher using TradingView formula
+            results = _get_fisher_transform(quotes, lookback_periods)
+            latest = results[-1]
+
+            print(f"[v0] Fisher from {name} (TradingView formula)")
             return {
-                "fisher":  latest["fisher"],
-                "trigger": latest["trigger"],
-                "close":   latest["close"],
-                "time":    latest["time"],
+                "fisher":  latest.fisher if latest.fisher else 0,
+                "trigger": latest.trigger if latest.trigger else 0,
+                "close":   quotes[-1].close,
+                "time":    candles[-1]["time"],
             }
         except Exception as e:
             print(f"[v0] {name} failed: {e}")
